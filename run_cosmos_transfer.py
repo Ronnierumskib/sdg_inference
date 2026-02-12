@@ -11,12 +11,13 @@ from pathlib import Path
 
 # VM connection
 VM_USER = "root"
-VM_IP = "69.63.236.190"
-VM_PORT = 26249
+VM_IP = "51.154.62.90"
+VM_PORT = 61080
 
 # Local paths (WSL)
 WINDOWS_BASE_PATH = Path("/mnt/c/isaac-sim/_out_basic_writer")
 LOCAL_JSON_PATH = Path("image2image_road.json") 
+STAGING_DIR = Path("/tmp/cosmos_upload")
 
 # VM paths
 VM_BASE_PATH = "/workspace/cosmos-transfer2.5"
@@ -24,8 +25,8 @@ VM_ASSETS_PATH = f"{VM_BASE_PATH}/assets/image_example"
 VM_OUTPUT_PATH = f"{VM_BASE_PATH}/outputs/image2image"
 
 # Scene configuration
-SCENE_START = 0
-SCENE_END = 0   # inclusive
+SCENE_START = 3
+SCENE_END = 3   # inclusive
 
 # ==========================
 # HELPERS
@@ -58,7 +59,6 @@ def scp_from_vm(remote, local):
 # ==========================
 
 def main():
-    all_video_paths = []
     image_map = []  # (scene, filename)
 
     # 1. Collect images
@@ -72,61 +72,52 @@ def main():
 
         for img in sorted(scene_dir.iterdir()):
             if img.is_file() and rgb_pattern.match(img.name):
-                rel_path = f"scene_{scene}/{img.name}"
-                all_video_paths.append(rel_path)
                 image_map.append((scene, img.name))
 
-    if not all_video_paths:
-        raise RuntimeError("No images found!")
+    for scene, filename in image_map:
+        image_name = filename.replace(".png", "")
+        inferred_name = image_name + "_inferred"
 
-    # 2. Prepare JSON
-    with open(LOCAL_JSON_PATH, "r") as f:
-        cfg = json.load(f)
+        # ---- Update JSON per image ----
+        with open(LOCAL_JSON_PATH, "r") as f:
+            cfg = json.load(f)
 
-    cfg["video_path"] = all_video_paths
-    cfg["num_video_frames_per_chunk"] = 1
-    cfg["max_frames"] = 1
-    temp_json = Path("image2image_road_temp.json")
-    with open(temp_json, "w") as f:
-        json.dump(cfg, f, indent=4)
+        cfg["video_path"] = f"scene_{scene}/{filename}"
+        cfg["name"] = inferred_name
+        cfg["num_video_frames_per_chunk"] = 1
+        cfg["max_frames"] = 1
 
-    # 3. Prepare VM directories
-    ssh(f"mkdir -p {VM_ASSETS_PATH}")
-    ssh(f"mkdir -p {VM_OUTPUT_PATH}")
+        temp_json = Path("image2image_road_temp.json")
+        with open(temp_json, "w") as f:
+            json.dump(cfg, f, indent=4)
 
-    for scene in range(SCENE_START, SCENE_END + 1):
+        # ---- Prepare VM dirs ----
         ssh(f"mkdir -p {VM_ASSETS_PATH}/scene_{scene}")
+        ssh(f"mkdir -p {VM_BASE_PATH}/scene_{scene}")
 
-    # 4. Upload JSON
-    scp_to_vm(temp_json, f"{VM_ASSETS_PATH}/image2image_road.json")
+        # ---- Upload image + JSON ----
+        scp_to_vm(temp_json, f"{VM_ASSETS_PATH}/image2image_road.json")
+        scp_to_vm(
+            WINDOWS_BASE_PATH / f"scene_{scene}" / filename,
+            f"{VM_ASSETS_PATH}/scene_{scene}"
+        )
 
-    # 5. Upload images
-    for scene, filename in image_map:
-        local_img = WINDOWS_BASE_PATH / f"scene_{scene}" / filename
-        remote_dir = f"{VM_ASSETS_PATH}/scene_{scene}"
-        scp_to_vm(local_img, remote_dir)
+        # ---- Run inference for THIS image ----
+        ssh(
+            f"cd {VM_BASE_PATH} && source .venv/bin/activate && python examples/inference.py -i assets/image_example/image2image_road.json -o scene_{scene}"
+        )
 
-    # 6. Run inference
-    ssh(
-        f"cd {VM_BASE_PATH} && "
-        f"python examples/inference.py "
-        f"-i assets/image_example/image2image_road.json "
-        f"-o outputs/image2image"
-    )
-
-    # 7. Download results and place back
-    for scene, filename in image_map:
-        inferred_local = (
+        # ---- Download result ----
+        remote_out = (
+            f"{VM_BASE_PATH}/scene_{scene}/{inferred_name}.jpg"
+        )
+        local_out = (
             WINDOWS_BASE_PATH
             / f"scene_{scene}"
-            / filename.replace(".png", "_inferred.png")
+#            / f"{inferred_name}.jpg"
         )
 
-        remote_out = (
-            f"{VM_OUTPUT_PATH}/scene_{scene}/{filename}"
-        )
-
-        scp_from_vm(remote_out, inferred_local)
+        scp_from_vm(remote_out, local_out)
 
     print("All scenes processed successfully")
 
