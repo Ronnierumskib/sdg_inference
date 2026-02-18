@@ -62,7 +62,7 @@ def main():
         for img in sorted(scene_dir.iterdir()):
             if img.is_file() and rgb_pattern.match(img.name):
                 image_name = img.stem
-                inferred_name = image_name + "_inferred"
+                inferred_name = f"scene_{scene}_{image_name}_inferred"
                 image_map.append((scene, img.name, image_name, inferred_name))
 
     if not image_map:
